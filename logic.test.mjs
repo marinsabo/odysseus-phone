@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  averages, buildEntry, entryPath, isoMoment, latestWeight, mergeDays, parseNumber, pruneEntries, publicEntry,
+  SWAPPED, averages, buildCheckin, buildEntry, checkinAnswered, checkinForm, checkinSteps, entryPath, isoMoment, latestWeight,
+  mergeDays, nextStep, parseNumber, pruneEntries, publicEntry,
 } from "./logic.js";
 
 const TODAY = "2026-11-01";
@@ -82,4 +83,71 @@ test("the file name carries the id, and the moment carries its offset", () => {
   assert.equal(entryPath({ date: TODAY, id: "abc-1" }), "inbox/2026-11-01_abc-1.json");
   assert.match(isoMoment(new Date(2026, 10, 1, 20, 5, 9)), /^2026-11-01T20:05:09[+-]\d\d:\d\d$/);
   assert.equal("sent" in publicEntry({ id: "a", sent: true }), false);
+});
+
+const form = (extra = {}) => ({ date: TODAY, answered: false, planned: [], logged: [], unrated: [], ...extra });
+const shown = (steps, answers) => {
+  const ids = [];
+  for (let i = nextStep(steps, -1, answers); i !== -1; i = nextStep(steps, i, answers)) ids.push(steps[i].id);
+  return ids;
+};
+
+test("a plain evening asks what the desktop asks, in its order", () => {
+  const steps = checkinSteps(form(), { today: TODAY, day: undefined });
+  assert.deepEqual(shown(steps, {}), ["ill", "extra", "energy", "mood", "numbers"]);
+});
+
+test("numbers already given are not asked for again", () => {
+  const steps = checkinSteps(form(), { today: TODAY, day: { calories_in: 2800 } });
+  assert.deepEqual(steps.find((s) => s.id === "numbers").fields, ["protein_g"]);
+  const none = checkinSteps(form(), { today: TODAY, day: { calories_in: 2800, protein_g: 170 } });
+  assert.equal(none.some((s) => s.id === "numbers"), false);
+});
+
+test("an older day asks what happened and not how it felt", () => {
+  const steps = checkinSteps(form({ date: "2026-10-29" }), { today: TODAY, day: undefined });
+  assert.equal(steps.some((s) => s.id === "energy"), false);
+  const recent = checkinSteps(form({ date: "2026-10-30" }), { today: TODAY, day: undefined });
+  assert.equal(recent.some((s) => s.id === "energy"), true);
+});
+
+test("a planned session already logged is not asked, an unrated one is, and illness drops the plan", () => {
+  const planned = [{ id: 1, session_type: "gym" }, { id: 2, session_type: "kickboxing" }];
+  const steps = checkinSteps(form({ planned, logged: ["kickboxing"], unrated: [{ id: 9, session_type: "kickboxing" }] }), { today: TODAY, day: {} });
+  assert.deepEqual(shown(steps, {}).slice(0, 3), ["ill", "rating:9", "planned:1:gym"]);
+  assert.equal(shown(steps, { ill: "ill" }).includes("planned:1:gym"), false);
+});
+
+test("a swap asks which and how, only after that answer", () => {
+  const steps = checkinSteps(form({ planned: [{ id: 1, session_type: "gym" }] }), { today: TODAY, day: {} });
+  assert.equal(shown(steps, {}).includes("swap:1"), false);
+  const swapped = { "planned:1:gym": SWAPPED, "swap:1": "run" };
+  assert.ok(shown(steps, swapped).includes("swaprating:1"));
+});
+
+test("the answers become what the laptop reads", () => {
+  assert.deepEqual(
+    buildCheckin({
+      ill: "well", "rating:9": 5, "planned:1:gym": SWAPPED, "swap:1": "run", "swaprating:1": 3,
+      "planned:2:kickboxing": 4, "planned:3:gym": null, extra: "training", extrarating: 2, energy: 4, mood: 3,
+    }),
+    {
+      ill: false, energy: 4, mood: 3, ratings: { 9: 5 },
+      sessions: [{ session_type: "run", quality: 3 }, { session_type: "kickboxing", quality: 4 }, { session_type: "training", quality: 2 }],
+    },
+  );
+});
+
+test("a check-in goes even with no number typed, and blank numbers stay out of it", () => {
+  const { entry } = buildEntry({ id: "a", date: TODAY, now: new Date(), fields: { calories_in: "" }, checkin: { ill: true } });
+  assert.deepEqual(entry.checkin, { ill: true });
+  assert.equal("calories_in" in entry, false);
+});
+
+test("a day answered on the laptop or queued here does not offer the check-in again", () => {
+  const snapshot = { checkin: [form({ answered: true })] };
+  assert.equal(checkinAnswered(snapshot, [], TODAY), true);
+  assert.equal(checkinAnswered(null, [{ date: TODAY, checkin: { ill: false } }], TODAY), true);
+  assert.equal(checkinAnswered(null, [{ date: TODAY, protein_g: 100 }], TODAY), false);
+  assert.deepEqual(checkinForm(null, TODAY), form());
 });

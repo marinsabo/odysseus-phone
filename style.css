@@ -158,3 +158,27 @@ button.quiet {
 .note {
   margin: 8px 4px 0;
 }
+[hidden] {
+  display: none;
+}
+h2.question {
+  margin: 16px 0 4px;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--label);
+}
+button.option {
+  margin-top: 8px;
+  background: var(--surface);
+  color: var(--label);
+  font-weight: 400;
+}
+.scale {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+.scale button.option {
+  min-height: 52px;
+  font-variant-numeric: tabular-nums;
+}

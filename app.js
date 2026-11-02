@@ -1,5 +1,6 @@
 /**
- * The phone page: calories, protein and a weigh-in, typed while the laptop is somewhere else.
+ * The phone page: the evening check-in, calories, protein and a weigh-in, typed while the laptop
+ * is somewhere else.
  *
  * There is no server. Each entry goes as one file into a private GitHub repository and the
  * laptop's importer (`daemon/odysseus/etl/phone.py`) reads it whenever it is next on; the
@@ -15,7 +16,8 @@
  */
 
 import {
-  BACKFILL_DAYS, addDays, averages, buildEntry, entryPath, isoDate, latestWeight, mergeDays, pruneEntries, publicEntry,
+  BACKFILL_DAYS, LIMITS, SWAPPED, WORKOUTS, addDays, averages, buildCheckin, buildEntry, checkinAnswered, checkinForm, checkinSteps,
+  entryPath, isoDate, latestWeight, mergeDays, nextStep, parseNumber, pruneEntries, publicEntry,
 } from "./logic.js";
 
 const API = "https://api.github.com";
@@ -56,7 +58,35 @@ const words = {
   laptopNever: "The laptop has not sent its record yet, so this is only what was typed here.",
   disconnect: "Disconnect this phone",
   disconnectSure: "Remove the token from this phone? Anything not yet sent is kept.",
+  numbers: "Numbers",
+  checkin: "Evening check-in",
+  checkedIn: "Checked in for this day.",
+  checkinTitle: (label) => `Check-in, ${label}`,
+  backfillNote: "Recording an earlier day.",
+  back: "Back",
+  cancel: "Cancel",
+  done: "Done",
+  scale: "1 low, 5 high",
+  ill: "Were you ill?",
+  illFootnote: "Planned training on a day you were ill comes off this week's number.",
+  illNo: "No",
+  illYes: "Yes, I was ill",
+  session: (type) => `${sessionNames[type] ?? type}. How did it go?`,
+  sessionMissed: "Did not happen",
+  sessionSwapped: "Did something else",
+  swapWhich: "What was it instead?",
+  extra: "Any other training today?",
+  extraNone: "Nothing else",
+  extraRating: "How did it go?",
+  energy: "Energy",
+  mood: "Mood",
+  nutrition: "Calories and protein",
+  recorded: "Recorded",
+  ofFive: (label, value) => `${label} ${value} of 5`,
+  illRecorded: "Ill",
 };
+
+const sessionNames = { gym: "Gym", kickboxing: "Kickboxing", run: "Run", training: "Other training", cycling: "Cycling", walking: "Walk", hiking: "Hike", swimming: "Swim" };
 
 const fieldNames = { calories_in: words.calories, protein_g: words.protein, weight_kg: words.weight };
 const format = (n) => Math.round(n).toLocaleString("en-US");
@@ -130,6 +160,7 @@ function el(tag, props = {}, ...children) {
 }
 
 const app = document.getElementById("app");
+let resync = null;
 
 function renderSetup(message = "") {
   const repo = el("input", { value: read(STORE.repo, ""), placeholder: words.repoPlaceholder, autocapitalize: "none", autocomplete: "off", spellcheck: false, "aria-label": words.repo });
@@ -206,9 +237,109 @@ function renderSummary(root) {
   );
 }
 
-function renderLog() {
+/** One question at a time, a single tap each, as on the desktop. Nothing is sent until the end. */
+function renderCheckin(day) {
   const today = isoDate(new Date());
-  const date = el("input", { type: "date", value: today, min: addDays(today, -BACKFILL_DAYS), max: today, "aria-label": words.date });
+  const snapshot = read(STORE.snapshot, null);
+  const entries = read(STORE.entries, []);
+  const steps = checkinSteps(checkinForm(snapshot, day), { today, day: mergeDays(snapshot, entries).get(day) });
+  const answers = {};
+  const trail = [];
+  const header = [el("h1", {}, words.checkinTitle(shortDate(day))), day < today ? el("p", { class: "note" }, words.backfillNote) : null];
+
+  function show(index) {
+    const step = steps[index];
+    const go = (update) => {
+      Object.assign(answers, update);
+      trail.push(index);
+      const next = nextStep(steps, index, answers);
+      if (next === -1) finish();
+      else show(next);
+    };
+    const option = (label, value) => el("button", { type: "button", class: "option", onclick: () => go({ [step.id]: value }) }, label);
+    const scale = () => el("div", { class: "scale" }, ...[1, 2, 3, 4, 5].map((n) => option(String(n), n)));
+    const footnote = (text) => el("p", { class: "note" }, text);
+    const body = {
+      ill: () => [el("h2", { class: "question" }, words.ill), footnote(words.illFootnote), option(words.illNo, "well"), option(words.illYes, "ill")],
+      session: () => [el("h2", { class: "question" }, words.session(step.type)), footnote(words.scale), scale()],
+      planned: () => [el("h2", { class: "question" }, words.session(step.type)), footnote(words.scale), scale(), option(words.sessionMissed, null), option(words.sessionSwapped, SWAPPED)],
+      swap: () => [el("h2", { class: "question" }, words.swapWhich), ...step.types.map((t) => option(sessionNames[t], t))],
+      extra: () => [el("h2", { class: "question" }, words.extra), option(words.extraNone, null), ...WORKOUTS.map((t) => option(sessionNames[t], t))],
+      rating: () => [el("h2", { class: "question" }, words.extraRating), footnote(words.scale), scale()],
+      energy: () => [el("h2", { class: "question" }, words.energy), footnote(words.scale), scale()],
+      mood: () => [el("h2", { class: "question" }, words.mood), footnote(words.scale), scale()],
+      numbers: () => numbersStep(step, go),
+    }[step.kind]();
+    const leave = trail.length
+      ? el("button", { type: "button", class: "quiet", onclick: () => show(trail.pop()) }, words.back)
+      : el("button", { type: "button", class: "quiet", onclick: () => renderLog(day) }, words.cancel);
+    app.replaceChildren(...header.filter(Boolean), ...body, leave);
+  }
+
+  function numbersStep(step, go) {
+    const inputs = Object.fromEntries(step.fields.map((key) => [key, el("input", { type: "text", inputMode: "numeric", autocomplete: "off", "aria-label": fieldNames[key] })]));
+    const status = el("p", { class: "status", role: "status" });
+    return [
+      el("h2", { class: "question" }, words.nutrition),
+      el("div", { class: "card" }, ...step.fields.map((key) =>
+        el("label", { class: "field", "data-field": key }, el("span", {}, fieldNames[key]), inputs[key], el("span", { class: "unit" }, key === "calories_in" ? "kcal" : "g")))),
+      el("button", {
+        type: "button",
+        onclick: () => {
+          for (const key of step.fields) {
+            const value = parseNumber(inputs[key].value);
+            if (value !== null && !(value >= LIMITS[key][0] && value <= LIMITS[key][1])) {
+              status.textContent = words.outOfRange(fieldNames[key]);
+              return;
+            }
+          }
+          go(Object.fromEntries(step.fields.map((key) => [key, inputs[key].value])));
+        },
+      }, words.done),
+      status,
+    ];
+  }
+
+  async function finish() {
+    const checkin = buildCheckin(answers);
+    const fields = { calories_in: answers.calories_in, protein_g: answers.protein_g };
+    const { entry } = buildEntry({ id: crypto.randomUUID(), date: day, now: new Date(), fields, checkin });
+    write(STORE.entries, [...read(STORE.entries, []), { ...entry, sent: false }]);
+    const status = el("p", { class: "status", role: "status" });
+    const named = (type) => sessionNames[type] ?? type;
+    const rated = Object.entries(checkin.ratings).map(([id, quality]) => {
+      const found = steps.find((s) => s.id === `rating:${id}`);
+      return words.ofFive(named(found.type), quality);
+    });
+    const lines = [
+      checkin.ill ? words.illRecorded : null,
+      ...rated,
+      ...checkin.sessions.map((s) => words.ofFive(named(s.session_type), s.quality)),
+      checkin.energy === null ? null : words.ofFive(words.energy, checkin.energy),
+      checkin.mood === null ? null : words.ofFive(words.mood, checkin.mood),
+      entry.calories_in === undefined ? null : `${words.calories} ${format(entry.calories_in)} kcal`,
+      entry.protein_g === undefined ? null : `${words.protein} ${format(entry.protein_g)} g`,
+    ].filter(Boolean);
+    app.replaceChildren(
+      el("h1", {}, words.recorded),
+      el("div", { class: "card" }, ...lines.map((text) => el("div", { class: "row" }, text))),
+      status,
+      el("button", { type: "button", onclick: () => renderLog(day) }, words.done),
+    );
+    try {
+      await flush();
+      status.textContent = words.sent;
+    } catch (exc) {
+      status.textContent = exc instanceof Refused ? words.tokenRefused : words.queued(read(STORE.entries, []).filter((e) => !e.sent).length);
+    }
+  }
+
+  show(0);
+}
+
+function renderLog(day) {
+  const today = isoDate(new Date());
+  const date = el("input", { type: "date", value: day ?? today, min: addDays(today, -BACKFILL_DAYS), max: today, "aria-label": words.date });
   const input = (mode, label) => el("input", { type: "text", inputMode: mode, enterKeyHint: "next", autocomplete: "off", "aria-label": label });
   const inputs = {
     calories_in: input("numeric", words.calories),
@@ -218,11 +349,16 @@ function renderLog() {
   const field = (key, unit) => el("label", { class: "field", "data-field": key }, el("span", {}, fieldNames[key]), inputs[key], el("span", { class: "unit" }, unit));
   const status = el("p", { class: "status", role: "status" });
   const summary = el("div");
+  const begin = el("button", { type: "button", onclick: () => renderCheckin(date.value) }, words.checkin);
+  const checkedIn = el("p", { class: "note" }, words.checkedIn);
 
   // What the day already holds shows as a placeholder: a blank field leaves it alone.
   function showDay() {
     const day = mergeDays(read(STORE.snapshot, null), read(STORE.entries, [])).get(date.value);
     for (const [key, node] of Object.entries(inputs)) node.placeholder = day?.[key] === undefined ? "" : String(day[key]);
+    const answered = checkinAnswered(read(STORE.snapshot, null), read(STORE.entries, []), date.value);
+    begin.hidden = answered;
+    checkedIn.hidden = !answered;
   }
 
   async function sync(saved) {
@@ -270,7 +406,11 @@ function renderLog() {
   app.replaceChildren(
     el("h1", {}, words.title),
     el("div", { class: "card" },
-      el("label", { class: "field" }, el("span", {}, words.date), date),
+      el("label", { class: "field" }, el("span", {}, words.date), date)),
+    begin,
+    checkedIn,
+    el("h2", {}, words.numbers),
+    el("div", { class: "card" },
       field("calories_in", "kcal"),
       field("protein_g", "g"),
       field("weight_kg", "kg")),
@@ -290,7 +430,9 @@ function renderLog() {
   showDay();
   renderSummary(summary);
   sync(false);
-  window.addEventListener("online", () => sync(false));
+  window.removeEventListener("online", resync);
+  resync = () => sync(false);
+  window.addEventListener("online", resync);
 }
 
 function render() {

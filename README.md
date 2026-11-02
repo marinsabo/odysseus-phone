@@ -1,6 +1,7 @@
 # Phone page
 
-Calories, protein and a weigh-in, typed while the laptop is somewhere else. See decision 84.
+The evening check-in, calories, protein and a weigh-in, typed while the laptop is somewhere else.
+See decisions 84 and 85.
 
     phone (this page) ──► private GitHub repository ──► laptop (etl/phone.py)
                       ◄── snapshot.json             ◄──
