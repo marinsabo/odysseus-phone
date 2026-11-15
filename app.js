@@ -16,7 +16,7 @@
  */
 
 import {
-  BACKFILL_DAYS, LIMITS, SWAPPED, WORKOUTS, addDays, averages, buildCheckin, buildEntry, checkinAnswered, checkinForm, checkinSteps,
+  BACKFILL_DAYS, EXTRA_ILL, LIMITS, MISS_REASONS, SWAPPED, WORKOUTS, addDays, averages, buildCheckin, buildEntry, checkinForm, checkinSteps, checkinsDue,
   entryPath, isoDate, latestWeight, mergeDays, nextStep, parseNumber, pruneEntries, publicEntry,
 } from "./logic.js";
 
@@ -59,18 +59,18 @@ const words = {
   disconnect: "Disconnect this phone",
   disconnectSure: "Remove the token from this phone? Anything not yet sent is kept.",
   numbers: "Numbers",
-  checkin: "Evening check-in",
-  checkedIn: "Checked in for this day.",
+  checkinFor: (label) => `Check in: ${label}`,
+  checkinToday: "today",
+  checkedIn: "Nothing waiting to be checked in.",
   checkinTitle: (label) => `Check-in, ${label}`,
   backfillNote: "Recording an earlier day.",
   back: "Back",
   cancel: "Cancel",
   done: "Done",
   scale: "1 low, 5 high",
-  ill: "Were you ill?",
-  illFootnote: "Planned training on a day you were ill comes off this week's number.",
-  illNo: "No",
-  illYes: "Yes, I was ill",
+  missedWhy: "What got in the way?",
+  missedFootnote: "Ill takes the day's planned training off this week's number.",
+  extraIll: "Nothing, I was ill",
   session: (type) => `${sessionNames[type] ?? type}. How did it go?`,
   sessionMissed: "Did not happen",
   sessionSwapped: "Did something else",
@@ -85,6 +85,8 @@ const words = {
   ofFive: (label, value) => `${label} ${value} of 5`,
   illRecorded: "Ill",
 };
+
+const reasonNames = { ill: "Ill or injured", no_time: "No time", tired: "Too tired", not_motivated: "Didn't feel like it", away: "Away", other: "Something else" };
 
 const sessionNames = { gym: "Gym", kickboxing: "Kickboxing", run: "Run", training: "Other training", cycling: "Cycling", walking: "Walk", hiking: "Hike", swimming: "Swim" };
 
@@ -260,11 +262,11 @@ function renderCheckin(day) {
     const scale = () => el("div", { class: "scale" }, ...[1, 2, 3, 4, 5].map((n) => option(String(n), n)));
     const footnote = (text) => el("p", { class: "note" }, text);
     const body = {
-      ill: () => [el("h2", { class: "question" }, words.ill), footnote(words.illFootnote), option(words.illNo, "well"), option(words.illYes, "ill")],
+      why: () => [el("h2", { class: "question" }, words.missedWhy), footnote(words.missedFootnote), ...MISS_REASONS.map((r) => option(reasonNames[r], r))],
       session: () => [el("h2", { class: "question" }, words.session(step.type)), footnote(words.scale), scale()],
       planned: () => [el("h2", { class: "question" }, words.session(step.type)), footnote(words.scale), scale(), option(words.sessionMissed, null), option(words.sessionSwapped, SWAPPED)],
       swap: () => [el("h2", { class: "question" }, words.swapWhich), ...step.types.map((t) => option(sessionNames[t], t))],
-      extra: () => [el("h2", { class: "question" }, words.extra), option(words.extraNone, null), ...WORKOUTS.map((t) => option(sessionNames[t], t))],
+      extra: () => [el("h2", { class: "question" }, words.extra), option(words.extraNone, null), ...WORKOUTS.map((t) => option(sessionNames[t], t)), step.offerIll ? option(words.extraIll, EXTRA_ILL) : null].filter(Boolean),
       rating: () => [el("h2", { class: "question" }, words.extraRating), footnote(words.scale), scale()],
       energy: () => [el("h2", { class: "question" }, words.energy), footnote(words.scale), scale()],
       mood: () => [el("h2", { class: "question" }, words.mood), footnote(words.scale), scale()],
@@ -301,7 +303,7 @@ function renderCheckin(day) {
   }
 
   async function finish() {
-    const checkin = buildCheckin(answers);
+    const checkin = buildCheckin(answers, steps);
     const fields = { calories_in: answers.calories_in, protein_g: answers.protein_g };
     const { entry } = buildEntry({ id: crypto.randomUUID(), date: day, now: new Date(), fields, checkin });
     write(STORE.entries, [...read(STORE.entries, []), { ...entry, sent: false }]);
@@ -313,6 +315,7 @@ function renderCheckin(day) {
     });
     const lines = [
       checkin.ill ? words.illRecorded : null,
+      ...checkin.missed.filter((m) => m.reason !== "ill").map((m) => `${named(steps.find((s) => s.id.startsWith(`planned:${m.planned_session_id}:`)).type)}: ${reasonNames[m.reason].toLowerCase()}`),
       ...rated,
       ...checkin.sessions.map((s) => words.ofFive(named(s.session_type), s.quality)),
       checkin.energy === null ? null : words.ofFive(words.energy, checkin.energy),
@@ -349,16 +352,20 @@ function renderLog(day) {
   const field = (key, unit) => el("label", { class: "field", "data-field": key }, el("span", {}, fieldNames[key]), inputs[key], el("span", { class: "unit" }, unit));
   const status = el("p", { class: "status", role: "status" });
   const summary = el("div");
-  const begin = el("button", { type: "button", onclick: () => renderCheckin(date.value) }, words.checkin);
-  const checkedIn = el("p", { class: "note" }, words.checkedIn);
+  // One button for each day still waiting, newest first. The date picker is for the numbers.
+  const due = el("div");
 
   // What the day already holds shows as a placeholder: a blank field leaves it alone.
   function showDay() {
     const day = mergeDays(read(STORE.snapshot, null), read(STORE.entries, [])).get(date.value);
     for (const [key, node] of Object.entries(inputs)) node.placeholder = day?.[key] === undefined ? "" : String(day[key]);
-    const answered = checkinAnswered(read(STORE.snapshot, null), read(STORE.entries, []), date.value);
-    begin.hidden = answered;
-    checkedIn.hidden = !answered;
+    const waiting = checkinsDue(read(STORE.snapshot, null), read(STORE.entries, []), today);
+    due.replaceChildren(
+      ...(waiting.length
+        ? waiting.map((d) => el("button", { type: "button", onclick: () => renderCheckin(d) },
+            words.checkinFor(d === today ? words.checkinToday : shortDate(d))))
+        : [el("p", { class: "note" }, words.checkedIn)]),
+    );
   }
 
   async function sync(saved) {
@@ -405,11 +412,10 @@ function renderLog(day) {
   });
   app.replaceChildren(
     el("h1", {}, words.title),
+    due,
+    el("h2", {}, words.numbers),
     el("div", { class: "card" },
       el("label", { class: "field" }, el("span", {}, words.date), date)),
-    begin,
-    checkedIn,
-    el("h2", {}, words.numbers),
     el("div", { class: "card" },
       field("calories_in", "kcal"),
       field("protein_g", "g"),

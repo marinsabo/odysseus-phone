@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  SWAPPED, averages, buildCheckin, buildEntry, checkinAnswered, checkinForm, checkinSteps, entryPath, isoMoment, latestWeight,
+  SWAPPED, averages, buildCheckin, buildEntry, checkinAnswered, checkinForm, checkinSteps, checkinsDue, entryPath, isoMoment, latestWeight,
   mergeDays, nextStep, parseNumber, pruneEntries, publicEntry,
 } from "./logic.js";
 
@@ -94,7 +94,7 @@ const shown = (steps, answers) => {
 
 test("a plain evening asks what the desktop asks, in its order", () => {
   const steps = checkinSteps(form(), { today: TODAY, day: undefined });
-  assert.deepEqual(shown(steps, {}), ["ill", "extra", "energy", "mood", "numbers"]);
+  assert.deepEqual(shown(steps, {}), ["extra", "energy", "mood", "numbers"]);
 });
 
 test("numbers already given are not asked for again", () => {
@@ -111,11 +111,33 @@ test("an older day asks what happened and not how it felt", () => {
   assert.equal(recent.some((s) => s.id === "energy"), true);
 });
 
-test("a planned session already logged is not asked, an unrated one is, and illness drops the plan", () => {
+test("a planned session already logged is not asked, an unrated one is", () => {
   const planned = [{ id: 1, session_type: "gym" }, { id: 2, session_type: "kickboxing" }];
   const steps = checkinSteps(form({ planned, logged: ["kickboxing"], unrated: [{ id: 9, session_type: "kickboxing" }] }), { today: TODAY, day: {} });
-  assert.deepEqual(shown(steps, {}).slice(0, 3), ["ill", "rating:9", "planned:1:gym"]);
-  assert.equal(shown(steps, { ill: "ill" }).includes("planned:1:gym"), false);
+  assert.deepEqual(shown(steps, {}).slice(0, 2), ["rating:9", "planned:1:gym"]);
+});
+
+test("why is asked only after did not happen, and ill skips the rest of training", () => {
+  const planned = [{ id: 1, session_type: "gym" }, { id: 2, session_type: "kickboxing" }];
+  const steps = checkinSteps(form({ planned }), { today: TODAY, day: {} });
+  assert.equal(shown(steps, { "planned:1:gym": 4 }).includes("why:1"), false);
+  const ill = shown(steps, { "planned:1:gym": null, "why:1": "ill" });
+  assert.ok(ill.includes("why:1"));
+  assert.equal(ill.includes("planned:2:kickboxing"), false);
+  assert.equal(ill.includes("extra"), false);
+  assert.ok(shown(steps, { "planned:1:gym": null, "why:1": "tired" }).includes("planned:2:kickboxing"));
+  assert.deepEqual(
+    buildCheckin({ "planned:1:gym": null, "why:1": "ill" }, steps),
+    { ill: true, energy: null, mood: null, ratings: {}, sessions: [],
+      missed: [{ planned_session_id: 1, reason: "ill" }, { planned_session_id: 2, reason: "ill" }] },
+  );
+});
+
+test("with nothing planned, ill is a row under other training", () => {
+  const steps = checkinSteps(form(), { today: TODAY, day: {} });
+  assert.equal(steps.find((s) => s.id === "extra").offerIll, true);
+  assert.equal(buildCheckin({ extra: "ill" }, steps).ill, true);
+  assert.equal(shown(steps, { extra: "ill" }).includes("extrarating"), false);
 });
 
 test("a swap asks which and how, only after that answer", () => {
@@ -128,12 +150,13 @@ test("a swap asks which and how, only after that answer", () => {
 test("the answers become what the laptop reads", () => {
   assert.deepEqual(
     buildCheckin({
-      ill: "well", "rating:9": 5, "planned:1:gym": SWAPPED, "swap:1": "run", "swaprating:1": 3,
+      "rating:9": 5, "planned:1:gym": SWAPPED, "swap:1": "run", "swaprating:1": 3,
       "planned:2:kickboxing": 4, "planned:3:gym": null, extra: "training", extrarating: 2, energy: 4, mood: 3,
     }),
     {
       ill: false, energy: 4, mood: 3, ratings: { 9: 5 },
       sessions: [{ session_type: "run", quality: 3 }, { session_type: "kickboxing", quality: 4 }, { session_type: "training", quality: 2 }],
+      missed: [],
     },
   );
 });
@@ -150,4 +173,20 @@ test("a day answered on the laptop or queued here does not offer the check-in ag
   assert.equal(checkinAnswered(null, [{ date: TODAY, checkin: { ill: false } }], TODAY), true);
   assert.equal(checkinAnswered(null, [{ date: TODAY, protein_g: 100 }], TODAY), false);
   assert.deepEqual(checkinForm(null, TODAY), form());
+});
+
+test("every unanswered day the laptop sent a form for is offered, newest first", () => {
+  const snapshot = {
+    checkin: [
+      form({ date: "2026-10-31", planned: [{ id: 1, session_type: "gym" }] }),
+      form({ date: "2026-10-30", answered: true }),
+      form({ date: "2026-10-29", logged: ["run"] }),
+      form({ date: "2026-10-20", planned: [{ id: 2, session_type: "gym" }] }),
+      form({ date: "2026-11-02", planned: [{ id: 3, session_type: "gym" }] }),
+    ],
+  };
+  // Today always; the 30th is answered, the 20th outside the window, the 2nd still ahead.
+  assert.deepEqual(checkinsDue(snapshot, [], TODAY), [TODAY, "2026-10-31", "2026-10-29"]);
+  assert.deepEqual(checkinsDue(snapshot, [{ date: "2026-10-29", checkin: { ill: false } }], TODAY), [TODAY, "2026-10-31"]);
+  assert.deepEqual(checkinsDue({ checkin: [form({ answered: true })] }, [], TODAY), []);
 });

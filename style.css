@@ -5,7 +5,9 @@
   --label: #1d1d1f;
   --secondary: #6e6e73;
   --line: rgba(60, 60, 67, 0.16);
-  --accent: #1f8a3d;
+  /* Blue, as on the laptop: white on it is 5.6:1, where the old green was 4.4:1, and
+     green is a trend's direction everywhere else. */
+  --accent: #0066cc;
   --on-accent: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
@@ -15,8 +17,9 @@
     --label: #f5f5f7;
     --secondary: #a1a1a6;
     --line: rgba(235, 235, 245, 0.16);
-    --accent: #30d158;
-    --on-accent: #06210f;
+    /* White on it 4.9:1; as a focus ring, 3.8:1 on the page. */
+    --accent: #0a6fd6;
+    --on-accent: #ffffff;
   }
 }
 
@@ -88,8 +91,11 @@ p {
   color: var(--secondary);
   font-size: 15px;
 }
+/* A number out of range: the label in its own ink, heavier, and the status line says
+   which and why. Not a colour — and not the button's colour, which it used to borrow. */
 .field[data-wrong] > span:first-child {
-  color: var(--accent);
+  color: var(--label);
+  font-weight: 600;
 }
 .stack .field {
   flex-direction: column;

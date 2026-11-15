@@ -15,6 +15,16 @@ export const SUBJECTIVE_RECALL_DAYS = 2;
 export const SWAPPED = -1;
 /** What can be logged at the check-in. "training" reads as "Other training". */
 export const WORKOUTS = ["gym", "kickboxing", "run", "training"];
+/** Why a planned session did not happen (checkin.MISS_REASONS). Ill skips the rest of training. */
+export const MISS_REASONS = ["ill", "no_time", "tired", "not_motivated", "away", "other"];
+/** The extra-training answer for a day with nothing planned that he was ill. */
+export const EXTRA_ILL = "ill";
+
+/** Ill, said under a planned session that did not happen, or on a day with nothing planned. */
+const saidIll = (a) =>
+  a.extra === EXTRA_ILL ||
+  Object.entries(a).some(([k, v]) => k.startsWith("why:") && v === "ill" &&
+    Object.entries(a).some(([p, answer]) => p.startsWith(`planned:${k.slice(4)}:`) && answer === null));
 const KEYS = ["calories_in", "protein_g"];
 /** Long enough for any queue. A laptop gone longer than this has bigger news than a number. */
 const KEEP_DAYS = 56;
@@ -152,12 +162,27 @@ export function checkinAnswered(snapshot, entries, date) {
 }
 
 /**
+ * The days still waiting for a check-in, most recent first: today, and each earlier day in the
+ * backfill window the laptop sent a form for. It used to offer only the date picker's day, so a
+ * missed evening was found only by stepping back through the picker.
+ */
+export function checkinsDue(snapshot, entries, today) {
+  const due = [];
+  for (let i = 0; i <= BACKFILL_DAYS; i += 1) {
+    const date = addDays(today, -i);
+    const known = i === 0 || (snapshot?.checkin ?? []).some((f) => f.date === date);
+    if (known && !checkinAnswered(snapshot, entries, date)) due.push(date);
+  }
+  return due;
+}
+
+/**
  * The questions for the day, in the desktop's order (`shell/src/screens/CheckIn.tsx`). Only what
  * a sensor cannot see: a step is left out when nothing about the day needs it.
  */
 export function checkinSteps(form, { today, day }) {
-  const notIll = (a) => a.ill !== "ill";
-  const steps = [{ id: "ill", kind: "ill" }];
+  const notIll = (a) => !saidIll(a);
+  const steps = [];
   for (const session of form.unrated) {
     steps.push({ id: `rating:${session.id}`, kind: "session", type: session.session_type });
   }
@@ -165,6 +190,7 @@ export function checkinSteps(form, { today, day }) {
     if (form.logged.includes(planned.session_type)) continue;
     const id = `planned:${planned.id}:${planned.session_type}`;
     steps.push({ id, kind: "planned", type: planned.session_type, when: notIll });
+    steps.push({ id: `why:${planned.id}`, kind: "why", when: (a) => a[id] === null });
     steps.push({
       id: `swap:${planned.id}`,
       kind: "swap",
@@ -177,8 +203,9 @@ export function checkinSteps(form, { today, day }) {
       when: (a) => notIll(a) && a[id] === SWAPPED && typeof a[`swap:${planned.id}`] === "string",
     });
   }
-  steps.push({ id: "extra", kind: "extra" });
-  steps.push({ id: "extrarating", kind: "rating", when: (a) => typeof a.extra === "string" });
+  const nothingPlanned = form.planned.every((p) => form.logged.includes(p.session_type));
+  steps.push({ id: "extra", kind: "extra", offerIll: nothingPlanned, when: notIll });
+  steps.push({ id: "extrarating", kind: "rating", when: (a) => typeof a.extra === "string" && a.extra !== EXTRA_ILL });
   if (addDays(form.date, SUBJECTIVE_RECALL_DAYS) >= today) {
     steps.push({ id: "energy", kind: "energy" });
     steps.push({ id: "mood", kind: "mood" });
@@ -196,10 +223,20 @@ export function nextStep(steps, index, answers) {
   return -1;
 }
 
-/** The answers as the laptop reads them. A planned session that did not happen is not logged. */
-export function buildCheckin(answers) {
+/** The answers as the laptop reads them. A planned session that did not happen is not logged;
+ * its reason is, and the ones an answer of ill skipped are ill too. */
+export function buildCheckin(answers, steps = []) {
   const ratings = {};
   const sessions = [];
+  const ill = saidIll(answers);
+  const missed = [];
+  for (const step of steps) {
+    if (step.kind !== "planned") continue;
+    const plannedId = Number(step.id.split(":")[1]);
+    const why = answers[`why:${plannedId}`];
+    if (answers[step.id] === null && typeof why === "string") missed.push({ planned_session_id: plannedId, reason: why });
+    else if (answers[step.id] === undefined && ill) missed.push({ planned_session_id: plannedId, reason: "ill" });
+  }
   for (const [id, value] of Object.entries(answers)) {
     if (typeof value !== "number") continue;
     if (id.startsWith("rating:")) ratings[id.slice(7)] = value;
@@ -210,7 +247,7 @@ export function buildCheckin(answers) {
       const type = answers[`swap:${plannedId}`];
       if (planned?.[1] === SWAPPED && typeof type === "string") sessions.push({ session_type: type, quality: value });
     }
-    if (id === "extrarating" && typeof answers.extra === "string") sessions.push({ session_type: answers.extra, quality: value });
+    if (id === "extrarating" && typeof answers.extra === "string" && answers.extra !== EXTRA_ILL) sessions.push({ session_type: answers.extra, quality: value });
   }
-  return { ill: answers.ill === "ill", energy: answers.energy ?? null, mood: answers.mood ?? null, ratings, sessions };
+  return { ill, energy: answers.energy ?? null, mood: answers.mood ?? null, ratings, sessions, missed };
 }
