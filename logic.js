@@ -9,8 +9,6 @@
 export const WINDOWS = [7, 28];
 export const MIN_LOGGED_FOR_TREND = 4;
 export const BACKFILL_DAYS = 7;
-/** Past this a day is reconstructed rather than rated, as in `domain/checkin.py`. */
-export const SUBJECTIVE_RECALL_DAYS = 2;
 /** The answer that means the planned session was replaced by another one. */
 export const SWAPPED = -1;
 /** What can be logged at the check-in. "training" reads as "Other training". */
@@ -180,7 +178,7 @@ export function checkinsDue(snapshot, entries, today) {
  * The questions for the day, in the desktop's order (`shell/src/screens/CheckIn.tsx`). Only what
  * a sensor cannot see: a step is left out when nothing about the day needs it.
  */
-export function checkinSteps(form, { today, day }) {
+export function checkinSteps(form, { day }) {
   const notIll = (a) => !saidIll(a);
   const steps = [];
   for (const session of form.unrated) {
@@ -206,10 +204,6 @@ export function checkinSteps(form, { today, day }) {
   const nothingPlanned = form.planned.every((p) => form.logged.includes(p.session_type));
   steps.push({ id: "extra", kind: "extra", offerIll: nothingPlanned, when: notIll });
   steps.push({ id: "extrarating", kind: "rating", when: (a) => typeof a.extra === "string" && a.extra !== EXTRA_ILL });
-  if (addDays(form.date, SUBJECTIVE_RECALL_DAYS) >= today) {
-    steps.push({ id: "energy", kind: "energy" });
-    steps.push({ id: "mood", kind: "mood" });
-  }
   const missing = KEYS.filter((key) => day?.[key] === undefined);
   if (missing.length) steps.push({ id: "numbers", kind: "numbers", fields: missing });
   return steps;
@@ -249,5 +243,5 @@ export function buildCheckin(answers, steps = []) {
     }
     if (id === "extrarating" && typeof answers.extra === "string" && answers.extra !== EXTRA_ILL) sessions.push({ session_type: answers.extra, quality: value });
   }
-  return { ill, energy: answers.energy ?? null, mood: answers.mood ?? null, ratings, sessions, missed };
+  return { ill, ratings, sessions, missed };
 }

@@ -94,7 +94,7 @@ const shown = (steps, answers) => {
 
 test("a plain evening asks what the desktop asks, in its order", () => {
   const steps = checkinSteps(form(), { today: TODAY, day: undefined });
-  assert.deepEqual(shown(steps, {}), ["extra", "energy", "mood", "numbers"]);
+  assert.deepEqual(shown(steps, {}), ["extra", "numbers"]);
 });
 
 test("numbers already given are not asked for again", () => {
@@ -102,13 +102,6 @@ test("numbers already given are not asked for again", () => {
   assert.deepEqual(steps.find((s) => s.id === "numbers").fields, ["protein_g"]);
   const none = checkinSteps(form(), { today: TODAY, day: { calories_in: 2800, protein_g: 170 } });
   assert.equal(none.some((s) => s.id === "numbers"), false);
-});
-
-test("an older day asks what happened and not how it felt", () => {
-  const steps = checkinSteps(form({ date: "2026-10-29" }), { today: TODAY, day: undefined });
-  assert.equal(steps.some((s) => s.id === "energy"), false);
-  const recent = checkinSteps(form({ date: "2026-10-30" }), { today: TODAY, day: undefined });
-  assert.equal(recent.some((s) => s.id === "energy"), true);
 });
 
 test("a planned session already logged is not asked, an unrated one is", () => {
@@ -128,7 +121,7 @@ test("why is asked only after did not happen, and ill skips the rest of training
   assert.ok(shown(steps, { "planned:1:gym": null, "why:1": "tired" }).includes("planned:2:kickboxing"));
   assert.deepEqual(
     buildCheckin({ "planned:1:gym": null, "why:1": "ill" }, steps),
-    { ill: true, energy: null, mood: null, ratings: {}, sessions: [],
+    { ill: true, ratings: {}, sessions: [],
       missed: [{ planned_session_id: 1, reason: "ill" }, { planned_session_id: 2, reason: "ill" }] },
   );
 });
@@ -151,10 +144,10 @@ test("the answers become what the laptop reads", () => {
   assert.deepEqual(
     buildCheckin({
       "rating:9": 5, "planned:1:gym": SWAPPED, "swap:1": "run", "swaprating:1": 3,
-      "planned:2:kickboxing": 4, "planned:3:gym": null, extra: "training", extrarating: 2, energy: 4, mood: 3,
+      "planned:2:kickboxing": 4, "planned:3:gym": null, extra: "training", extrarating: 2,
     }),
     {
-      ill: false, energy: 4, mood: 3, ratings: { 9: 5 },
+      ill: false, ratings: { 9: 5 },
       sessions: [{ session_type: "run", quality: 3 }, { session_type: "kickboxing", quality: 4 }, { session_type: "training", quality: 2 }],
       missed: [],
     },

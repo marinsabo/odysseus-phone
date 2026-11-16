@@ -78,8 +78,6 @@ const words = {
   extra: "Any other training today?",
   extraNone: "Nothing else",
   extraRating: "How did it go?",
-  energy: "Energy",
-  mood: "Mood",
   nutrition: "Calories and protein",
   recorded: "Recorded",
   ofFive: (label, value) => `${label} ${value} of 5`,
@@ -268,8 +266,6 @@ function renderCheckin(day) {
       swap: () => [el("h2", { class: "question" }, words.swapWhich), ...step.types.map((t) => option(sessionNames[t], t))],
       extra: () => [el("h2", { class: "question" }, words.extra), option(words.extraNone, null), ...WORKOUTS.map((t) => option(sessionNames[t], t)), step.offerIll ? option(words.extraIll, EXTRA_ILL) : null].filter(Boolean),
       rating: () => [el("h2", { class: "question" }, words.extraRating), footnote(words.scale), scale()],
-      energy: () => [el("h2", { class: "question" }, words.energy), footnote(words.scale), scale()],
-      mood: () => [el("h2", { class: "question" }, words.mood), footnote(words.scale), scale()],
       numbers: () => numbersStep(step, go),
     }[step.kind]();
     const leave = trail.length
@@ -318,8 +314,6 @@ function renderCheckin(day) {
       ...checkin.missed.filter((m) => m.reason !== "ill").map((m) => `${named(steps.find((s) => s.id.startsWith(`planned:${m.planned_session_id}:`)).type)}: ${reasonNames[m.reason].toLowerCase()}`),
       ...rated,
       ...checkin.sessions.map((s) => words.ofFive(named(s.session_type), s.quality)),
-      checkin.energy === null ? null : words.ofFive(words.energy, checkin.energy),
-      checkin.mood === null ? null : words.ofFive(words.mood, checkin.mood),
       entry.calories_in === undefined ? null : `${words.calories} ${format(entry.calories_in)} kcal`,
       entry.protein_g === undefined ? null : `${words.protein} ${format(entry.protein_g)} g`,
     ].filter(Boolean);
